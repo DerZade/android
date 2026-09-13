@@ -108,6 +108,8 @@ import java.time.LocalDateTime
 import java.time.ZoneId
 import javax.inject.Inject
 import kotlin.coroutines.cancellation.CancellationException
+import kotlin.time.Clock
+import kotlin.time.ExperimentalTime
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -122,6 +124,7 @@ import okhttp3.Request
 import okio.sink
 import timber.log.Timber
 
+@OptIn(ExperimentalTime::class)
 class MessagingManager @Inject constructor(
     @ApplicationContext val context: Context,
     private val okHttpClientProvider: SuspendProvider<OkHttpClient>,
@@ -136,6 +139,7 @@ class MessagingManager @Inject constructor(
     private val assistConfigManager: AssistConfigManager,
     private val defaultAssistantManager: DefaultAssistantManager,
     private val bluetoothSensorManager: BluetoothSensorManager,
+    private val clock: Clock,
 ) {
     companion object {
         const val APP_PREFIX = "app://"
@@ -156,6 +160,7 @@ class MessagingManager @Inject constructor(
         const val CHRONOMETER = "chronometer"
         const val WHEN = "when"
         const val WHEN_RELATIVE = "when_relative"
+        const val WHEN_START = "when_start"
         const val PROGRESS = "progress"
         const val PROGRESS_MAX = "progress_max"
         const val PROGRESS_INDETERMINATE = "progress_indeterminate"
@@ -1137,29 +1142,16 @@ class MessagingManager @Inject constructor(
     }
 
     private fun handleChronometer(builder: NotificationCompat.Builder, data: Map<String, String>) {
-        try { // Without this, a non-numeric when value will crash the app
-            var notificationWhen =
-                data[WHEN]?.toLongOrNull()?.times(1000) ?: data[WHEN]?.toFloatOrNull()?.times(1000)?.toLong() ?: 0
-            val isRelative = data[WHEN_RELATIVE]?.toBoolean() == true
-            val usesChronometer = data[CHRONOMETER]?.toBoolean() == true
+        val timing = resolveChronometerTiming(data, now = clock.now()) ?: return
+        val usesChronometer = data[CHRONOMETER]?.toBoolean() == true
 
-            if (notificationWhen != 0L) {
-                if (isRelative) {
-                    notificationWhen += System.currentTimeMillis()
-                }
+        builder.setWhen(timing.whenAt.toEpochMilliseconds())
+        builder.setUsesChronometer(usesChronometer)
 
-                builder.setWhen(notificationWhen)
-                builder.setUsesChronometer(usesChronometer)
-
-                if (SdkVersion.isAtLeast(Build.VERSION_CODES.N)) {
-                    val countdown = notificationWhen > System.currentTimeMillis()
-                    // Without this builder.setChronometerCountDown throws a null reference exception
-                    builder.addExtras(Bundle())
-                    builder.setChronometerCountDown(countdown)
-                }
-            }
-        } catch (e: Exception) {
-            Timber.e(e, "Error while handling chronometer notification")
+        if (SdkVersion.isAtLeast(Build.VERSION_CODES.N)) {
+            // Without this builder.setChronometerCountDown throws a null reference exception
+            builder.addExtras(Bundle())
+            builder.setChronometerCountDown(timing.countDown)
         }
     }
 
